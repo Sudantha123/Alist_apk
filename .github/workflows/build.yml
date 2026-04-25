@@ -1,0 +1,151 @@
+name: 🚀 AList Flutter Android Build (Unsigned)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+
+env:
+  FLUTTER_VERSION: '3.22.0'
+  JAVA_VERSION: '17'
+
+jobs:
+  build:
+    name: 🏗️ Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ☕ Setup Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'gradle'
+
+      - name: 🐦 Setup Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: 📋 Flutter Version Info
+        run: |
+          flutter --version
+          dart --version
+
+      - name: 📦 Get Flutter Dependencies
+        run: flutter pub get
+
+      - name: 🔍 Analyze Code
+        run: flutter analyze --no-fatal-infos
+        continue-on-error: true
+
+      - name: 🔨 Build Debug APK
+        if: |
+          github.event_name == 'pull_request' ||
+          github.ref == 'refs/heads/develop' ||
+          (github.event.inputs.build_type == 'debug')
+        run: |
+          flutter build apk --debug --build-number=${{ github.run_number }}
+
+      - name: 📦 Build Release APK (Split per ABI & Universal)
+        if: |
+          github.event_name != 'pull_request' &&
+          github.ref != 'refs/heads/develop' &&
+          github.event.inputs.build_type != 'debug'
+        run: |
+          # මේකෙන් වෙන වෙනම architectures වලට (arm64, v7a) APK හදයි
+          flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
+          # මේකෙන් හැම phone එකකටම වැඩ කරන Universal APK එක හදයි
+          flutter build apk --release --build-number=${{ github.run_number }}
+
+      - name: 📂 List Build Outputs
+        run: |
+          echo "=== APK Files Found ==="
+          find build/app/outputs -name "*.apk" -exec ls -lh {} \;
+
+      - name: ⬆️ Upload Debug APK
+        if: |
+          github.event_name == 'pull_request' ||
+          github.ref == 'refs/heads/develop' ||
+          (github.event.inputs.build_type == 'debug')
+        uses: actions/upload-artifact@v4
+        with:
+          name: AList-Debug-APK
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7
+
+      - name: ⬆️ Upload Release APKs
+        if: |
+          github.event_name != 'pull_request' &&
+          github.ref != 'refs/heads/develop' &&
+          github.event.inputs.build_type != 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AList-Release-APKs
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
+
+  release:
+    name: 🎉 Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: ⬇️ Download Release APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: AList-Release-APKs
+          path: apks/
+
+      - name: 🏷️ Get Tag Name
+        id: tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: 🎉 Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG }}
+          name: "AList Flutter ${{ steps.tag.outputs.TAG }}"
+          body: |
+            ## 🚀 AList Flutter Android (Unsigned)
+            
+            මෙම APK එක sign කර නොමැති නිසා install කිරීමේදී "Play Protect" අවවාදයක් දිස්විය හැක. එය නොසලකා (Install anyway) කර ඉදිරියට යන්න.
+
+            ### 📥 Download APKs
+            Built with Build #${{ github.run_number }}
+          files: apks/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
